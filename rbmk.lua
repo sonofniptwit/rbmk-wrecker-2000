@@ -1,4 +1,5 @@
-local redInputSide = require("sides").right
+local redInputSide = require("sides").right -- side to take redstone input from
+local autoScram = true -- should the program automatically SCRAM the reactor if meltdown conditions are detected?
 
 local cmp = require("component"); local serial; local fs; local comp = require("computer"); local active = true; local gpu =
     cmp.gpu; local ox, oy =
@@ -109,11 +110,12 @@ local controlRodRegistry = {
     { "",         "PURPLE" }
 }
 
-local dataRegistry = { -- these values need to be 'chewed' by a logic reciever and resent on a seperate channel
-    { "2753b1b8" },    -- col heat
-    { "93061e02" },    -- fuel heat
-    { "f0a60078" },    -- depletion
-    { "c2f2282c" }     -- xenon poison
+local dataRegistry = { -- these values need to be 'chewed' by a logic reciever and resent on a seperate channel. NOTE: there MUST be a torch transmitting on each frequency, or the signal from the previous frequency will 'bleed' into the next
+    "2753b1b8",        -- col heat
+    "93061e02",        -- fuel heat
+    "f0a60078",        -- depletion
+    "c2f2282c",        -- xenon poison
+    "684166ec"         -- turbine throughput. oh yeah this one doesnt need 'chewing'
 }
 local lrh = {
     { 0, "RED" },
@@ -127,27 +129,36 @@ local function setRods(color, level) end
 
 local function textInput(button)
     gpu.setForeground(0)
+    local ob = gpu.getBackground()
+    gpu.setBackground(button[3])
     gpu.set(button[1], button[2], "000")
+    gpu.setBackground(ob)
     local etrd = ""
     local color = button[7]
     repeat
         term.setCursor(0, 1)
         local _, _, char = require("event").pull("key_down")
         if char == 13 then
-            setRods(color, tonumber(etrd) or 0); if not tonumber(etrd) then gpu.set(button[1], button[2], "000") end
+            setRods(color, tonumber(etrd) or 0); if not tonumber(etrd) then
+                ob = gpu.getBackground()
+                gpu.setBackground(button[3])
+                gpu.set(button[1], button[2], "000")
+                gpu.setBackground(ob)
+            end
             break
         end
         if #etrd > 0 and char == 8 then
-            etrd = etrd:sub(1, #etrd - 1); gpu.set(button[1], button[2], "   "); gpu.set(button[1], button[2],
-                string.rep('0', 3 - #etrd) .. etrd)
+            etrd = etrd:sub(1, #etrd - 1);ob = gpu.getBackground();gpu.setBackground(button[3]);gpu.set(button[1], button[2], "   "); gpu.set(button[1], button[2],string.rep('0', 3 - #etrd) .. etrd);gpu.setBackground(ob)
         end
         char = string.char(char)
         if tonumber(char) and #etrd < 3 then
             etrd = etrd .. char
             if tonumber(etrd) > 100 then etrd = "100" end
-            gpu.set(button[1], button[2], "   ")
+            ob = gpu.getBackground()
+            gpu.setBackground(button[3])
             gpu.set(button[1], button[2], string.rep('0', 3 - #etrd) .. etrd)
             comp.beep(tonumber(etrd) * 10 + 100, .1)
+            gpu.setBackground(ob)
         elseif #etrd >= 3 then
             comp.beep(2000, .075)
         end
@@ -156,24 +167,28 @@ local function textInput(button)
 end
 local buttonRegistry = {}
 local function popButtons()
-    local of=gpu.getForeground();local ob=gpu.getBackground()
+    local of = gpu.getForeground(); local ob = gpu.getBackground()
     for _, v in pairs(buttonRegistry) do
         gpu.setBackground(v[3])
         gpu.setForeground(v[4])
         gpu.set(v[1], v[2], v[5])
     end
-    gpu.setForeground(of);gpu.setBackground(ob)
+    gpu.setForeground(of); gpu.setBackground(ob)
 end
 local function loadPreset(btn) end
+local pln
 local function checkPresets()
     lty = 5
     if fs.exists("/rbmk/presets.rbmk") then
-        local ln=0
-        for _ in io.lines("/rbmk/presets.rbmk") do ln=ln+1 end
+        local ln = 0
+        for _ in io.lines("/rbmk/presets.rbmk") do ln = ln + 1 end; pln = ln
         gpu.setBackground(0xc3c3c3)
-        gpu.fill(21,3,15,ln+3,' ')
-        gpu.set(25,3,"PRESETS")
-        table.insert(buttonRegistry,{26,4,0xff0000,0,"DELETE",function() fs.remove("/rbmk/presets.rbmk");checkPresets() end,nil})
+        gpu.fill(21, 3, 15, ln + 3, ' ')
+        gpu.set(25, 3, "PRESETS")
+        table.insert(buttonRegistry,
+            { 26, 4, 0xff0000, 0, "DELETE", function()
+                fs.remove("/rbmk/presets.rbmk"); gpu.setBackground(0xaaaaff); gpu.fill(21, 3, 15, pln + 3, ' '); pln = 0
+            end, nil })
         for i, v in pairs(buttonRegistry) do if v[6] == loadPreset then table.remove(buttonRegistry, i) end end
         for line in io.lines("/rbmk/presets.rbmk") do
             gpu.setBackground(0xd2d2d2)
@@ -222,31 +237,33 @@ local function saveAsPreset(_)
     popButtons()
 end
 
+local function scram() setRods("RED", 0); setRods("YELLOW", 0); setRods("GREEN", 0); setRods("BLUE", 0); setRods("PURPLE", 0); comp.beep(1800, .75); comp.beep(2000, 1) end
+
 buttonRegistry = {
     --[[
     {X_pos,Y_pos,backColor,foreColor,"text",function}
     ]]
-    { resX - 5, 1,  0x3c3c3c, 0xffffff, "SAVE", saveAsPreset,                  nil },
-    { resX,     1,  0xff0000, 0,        "X",    function() active = false end, nil },
-    { 2,        4,  0xd2d2d2, 0,        "---",  textInput,                     "RED" },
-    { 2,        6,  0xd2d2d2, 0,        "---",  textInput,                     "YELLOW" },
-    { 2,        8,  0xd2d2d2, 0,        "---",  textInput,                     "GREEN" },
-    { 2,        10, 0xd2d2d2, 0,        "---",  textInput,                     "BLUE" },
-    { 2,        12, 0xd2d2d2, 0,        "---",  textInput,                     "PURPLE" },
-    {resX-11,1,0xff7000,0,"SCRAM",function()setRods("RED",0);setRods("YELLOW",0);setRods("GREEN",0);setRods("BLUE",0);setRods("PURPLE",0);comp.beep(1800,.75);comp.beep(2000,1)end,nil}
+    { resX - 5, 1,  0x3c3c3c, 0xffffff, "SAVE",  saveAsPreset,nil },
+    { resX,     1,  0xff0000, 0,        "X",     function() active = false end,nil },
+    { 2,        4,  0xd2d2d2, 0,        "---",   textInput,"RED" },
+    { 2,        6,  0xd2d2d2, 0,        "---",   textInput,"YELLOW" },
+    { 2,        8,  0xd2d2d2, 0,        "---",   textInput,"GREEN" },
+    { 2,        10, 0xd2d2d2, 0,        "---",   textInput,"BLUE" },
+    { 2,        12, 0xd2d2d2, 0,        "---",   textInput,"PURPLE" },
+    { resX - 11, 1, 0xff7000, 0,        "SCRAM",scram,nil }
 }
 function loadPreset(btn)
     for i, v in pairs(btn[7]) do
         setRods(controlRodRegistry[i][2], v)
-        local ob=gpu.getBackground();local of=gpu.getForeground()
-        gpu.setBackground(0xd2d2d2);gpu.setForeground(0)
-        for _,x in pairs(buttonRegistry) do
-            if x[6]==textInput and x[7]==controlRodRegistry[i][2] then
-                gpu.set(x[1]+13,x[2],string.rep('0',3-#tostring(v))..tostring(v))
+        local ob = gpu.getBackground(); local of = gpu.getForeground()
+        gpu.setBackground(0xd2d2d2); gpu.setForeground(0)
+        for _, x in pairs(buttonRegistry) do
+            if x[6] == textInput and x[7] == controlRodRegistry[i][2] then
+                gpu.set(x[1] + 13, x[2], string.rep('0', 3 - #tostring(v)) .. tostring(v))
                 break
             end
         end
-        gpu.setBackground(ob);gpu.setForeground(of)
+        gpu.setBackground(ob); gpu.setForeground(of)
     end
 end
 
@@ -323,125 +340,194 @@ gpu.setBackground(0xffffff)
 gpu.fill(1, 1, resX, 2, ' ')
 gpu.setForeground(0)
 gpu.set(1, 1, "RBMK WRECKER 2000")
-gpu.setBackground(0xc3c3c3); gpu.fill(1, 3, 19, 11, ' '); gpu.set(2, 3, "SET  COLOR P  LPV")
-checkPresets();os.sleep();popButtons()
+gpu.setBackground(0xc3c3c3); gpu.fill(1, 3, 19, 11, ' '); gpu.set(2, 3, "SET  COLOR P LPV")
+checkPresets(); os.sleep(); popButtons()
 gpu.setBackground(0xa5a5a5)
 gpu.setForeground(0xff0000); gpu.set(buttonRegistry[3][1] + 4, buttonRegistry[3][2], "   RED")
 gpu.setForeground(0xffff00); gpu.set(buttonRegistry[4][1] + 4, buttonRegistry[4][2], "YELLOW")
 gpu.setForeground(0x00ff00); gpu.set(buttonRegistry[5][1] + 4, buttonRegistry[5][2], " GREEN")
 gpu.setForeground(0x0000ff); gpu.set(buttonRegistry[6][1] + 4, buttonRegistry[6][2], "  BLUE")
 gpu.setForeground(0xff00ff); gpu.set(buttonRegistry[7][1] + 4, buttonRegistry[7][2], "PURPLE")
-gpu.setBackground(0xd2d2d2);gpu.setForeground(0)
-gpu.set(buttonRegistry[3][1] + 13, buttonRegistry[3][2],"---");gpu.set(buttonRegistry[4][1] + 13, buttonRegistry[4][2],"---");gpu.set(buttonRegistry[5][1] + 13, buttonRegistry[5][2],"---");gpu.set(buttonRegistry[6][1] + 13, buttonRegistry[6][2],"---");gpu.set(buttonRegistry[7][1] + 13, buttonRegistry[7][2],"---")
+gpu.setBackground(0xd2d2d2); gpu.setForeground(0)
+gpu.set(buttonRegistry[3][1] + 13, buttonRegistry[3][2], "---"); gpu.set(buttonRegistry[4][1] + 13, buttonRegistry[4][2],
+    "---"); gpu.set(buttonRegistry[5][1] + 13, buttonRegistry[5][2], "---"); gpu.set(buttonRegistry[6][1] + 13,
+    buttonRegistry[6][2], "---"); gpu.set(buttonRegistry[7][1] + 13, buttonRegistry[7][2], "---")
 
-local function updateColHeat()
-    input.setChannel(dataRegistry[1][1])
-    input.setCustomMap(false)
+local inpFunctions = {}
+
+local lh = 0
+function inpFunctions.updateColHeat()
+    input.setChannel(dataRegistry[1]); input.setPolling(true); input.setCustomMap(false)
     os.sleep(.1)
-    local of = gpu.getForeground()
-    local ob = gpu.getBackground()
+    local of = gpu.getForeground(); local ob = gpu.getBackground()
     gpu.setForeground(0)
     gpu.setBackground(0xaaaaaa)
     gpu.set(5, resY - 15, "COL HT.")
-    for y = resY - 16, resY - 1 do
+    for y = resY - 15, resY - 1 do
         if y % 2 == 0 then
             gpu.setBackground(0x5a5a5a)
         else
             gpu.setBackground(0x969696)
         end
-        gpu.set(3, y, ' ')
+        gpu.set(3, y, '║')
     end
     gpu.setBackground(0xff9000)
-    for h = 0, rednet.getInput(redInputSide) do
-        gpu.set(3, resY - 1 - h, ' ')
-    end
-    gpu.setForeground(of)
-    gpu.setBackground(ob)
+    lh = rednet.getInput(redInputSide)
+    for h = 1, lh do gpu.set(3, resY - h, ' ') end
+    gpu.setForeground(of); gpu.setBackground(ob)
 end
-local function updateFuelHeat()
-    input.setChannel(dataRegistry[2][1])
-    input.setCustomMap(false)
+
+local lfh = 0
+function inpFunctions.updateFuelHeat()
+    input.setChannel(dataRegistry[2]); input.setPolling(true); input.setCustomMap(false)
     os.sleep(.1)
-    local of = gpu.getForeground()
-    local ob = gpu.getBackground()
+    local of = gpu.getForeground(); local ob = gpu.getBackground()
     gpu.setForeground(0)
     gpu.setBackground(0xaaaaaa)
     gpu.set(15, resY - 15, "FUEL HEAT")
-    for y = resY - 16, resY - 1 do
+    for y = resY - 15, resY - 1 do
         if y % 2 == 0 then
             gpu.setBackground(0x009000)
         else
             gpu.setBackground(0x006000)
         end
-        gpu.set(13, y, ' ')
+        gpu.set(13, y, '║')
     end
     gpu.setBackground(0xff9000)
-    for h = 0, rednet.getInput(redInputSide) do
-        gpu.set(13, resY - 1 - h, ' ')
-    end
-    gpu.setForeground(of)
-    gpu.setBackground(ob)
+    lfh=rednet.getInput(redInputSide)
+    for h = 1, lfh do gpu.set(13, resY - h, ' ') end
+    gpu.setForeground(of); gpu.setBackground(ob)
 end
-local function updateDepletion()
-    input.setChannel(dataRegistry[3][1])
-    input.setCustomMap(false)
+
+local ld = 0
+function inpFunctions.updateDepletion()
+    input.setChannel(dataRegistry[3]); input.setPolling(true); input.setCustomMap(false)
     os.sleep(.1)
-    local of = gpu.getForeground()
-    local ob = gpu.getBackground()
+    local of = gpu.getForeground(); local ob = gpu.getBackground()
     gpu.setForeground(0)
     gpu.setBackground(0xaaaaaa)
     gpu.set(27, resY - 15, "FUEL DPL.")
-    for y = resY - 16, resY - 1 do
+    for y = resY - 15, resY - 1 do
         if y % 2 == 0 then
             gpu.setBackground(0x009000)
         else
             gpu.setBackground(0x006000)
         end
-        gpu.set(25, y, ' ')
+        gpu.set(25, y, '║')
     end
     gpu.setBackground(0x4b4b4b)
-    for h = 0, rednet.getInput(redInputSide) do
-        gpu.set(25, resY - 1 - h, ' ')
-    end
-    gpu.setForeground(of)
-    gpu.setBackground(ob)
+    ld = rednet.getInput(redInputSide)
+    for h = 1, ld do gpu.set(25, resY - h, ' ') end
+    gpu.setForeground(of); gpu.setBackground(ob)
 end
-local function updateXenon()
-    input.setChannel(dataRegistry[4][1])
-    input.setCustomMap(false)
+
+function inpFunctions.updateXenon()
+    input.setChannel(dataRegistry[4]); input.setPolling(true); input.setCustomMap(false)
     os.sleep(.1)
-    local of = gpu.getForeground()
-    local ob = gpu.getBackground()
+    local of = gpu.getForeground(); local ob = gpu.getBackground()
     gpu.setForeground(0)
     gpu.setBackground(0xaaaaaa)
     gpu.set(39, resY - 15, "Xe PSN")
-    for y = resY - 16, resY - 1 do
+    for y = resY - 15, resY - 1 do
         if y % 2 == 0 then
-            gpu.setBackground(0xc3c3c3)
+            gpu.setBackground(0x5a5a5a)
         else
-            gpu.setBackground(0xb4b4b4)
+            gpu.setBackground(0x969696)
         end
-        gpu.set(37, y, ' ')
+        gpu.set(37, y, '║')
     end
     gpu.setBackground(0x700070)
-    for h = 0, rednet.getInput(redInputSide) do
-        gpu.set(37, resY - 1 - h, ' ')
-    end
-    gpu.setForeground(of)
-    gpu.setBackground(ob)
+    for h = 1, rednet.getInput(redInputSide) do gpu.set(37, resY - h, ' ') end
+    gpu.setForeground(of); gpu.setBackground(ob)
 end
 
-input.setPolling(true)
+function inpFunctions.updateTurbine()
+    input.setChannel(dataRegistry[5]); input.setPolling(true); input.setCustomMap(false)
+    os.sleep(.1)
+    local of = gpu.getForeground(); local ob = gpu.getBackground()
+    if rednet.getInput(redInputSide) == 0 then
+        gpu.setBackground(0); gpu.setForeground(0xffffff)
+    else
+        gpu.setBackground(0x00ff00); gpu.setForeground(0)
+    end
+    gpu.set(resX - 4, resY - 1, "TRB")
+    gpu.setForeground(of); gpu.setBackground(ob)
+end
+
+function inpFunctions.fullDepletion()
+    input.setChannel(dataRegistry[3]); input.setPolling(true); input.setCustomMap(false)
+    os.sleep(.1)
+    if ld == 15 then
+        threading.create(function()
+            local of
+            local ob
+            repeat
+                os.sleep(.2)
+                of = gpu.getForeground(); ob = gpu.getBackground()
+                gpu.setBackground(0xff0000); gpu.setForeground(0); gpu.set(resX - 9, resY - 1, "DEP")
+                gpu.setForeground(of); gpu.setBackground(ob)
+                os.sleep(.2)
+                of = gpu.getForeground(); ob = gpu.getBackground()
+                gpu.setBackground(0); gpu.setForeground(0xffffff); gpu.set(resX - 9, resY - 1, "DEP")
+                gpu.setForeground(of); gpu.setBackground(ob)
+            until ld < 15
+            of = gpu.getForeground(); ob = gpu.getBackground()
+            gpu.setBackground(0); gpu.setForeground(0xffffff); gpu.set(resX - 9, resY - 1, "DEP")
+            gpu.setForeground(of); gpu.setBackground(ob)
+        end)
+    else
+        local of = gpu.getForeground(); local ob = gpu.getBackground()
+        gpu.setBackground(0); gpu.setForeground(0xffffff); gpu.set(resX - 9, resY - 1, "DEP")
+        gpu.setForeground(of); gpu.setBackground(ob)
+    end
+end
+
+local oht = false
+function inpFunctions.overheat()
+    os.sleep(.1)
+    if lh == 15 or lfh == 15 then
+        if not oht then
+            local of = gpu.getForeground(); local ob = gpu.getBackground()
+            gpu.setBackground(0xff0000); gpu.setForeground(0); gpu.set(resX - 9, resY - 3, "OVERHEAT")
+            gpu.setForeground(of); gpu.setBackground(ob)
+            if autoScram then scram() end;oht = true
+            threading.create(function()
+                local of
+                local ob
+                repeat
+                    comp.beep(2000, .05)
+                    os.sleep(.1)
+                    of = gpu.getForeground(); ob = gpu.getBackground()
+                    gpu.setBackground(0xff0000); gpu.setForeground(0); gpu.set(resX - 9, resY - 3, "OVERHEAT")
+                    gpu.setForeground(of); gpu.setBackground(ob)
+                    comp.beep(1900, .05)
+                    os.sleep(.1)
+                    of = gpu.getForeground(); ob = gpu.getBackground()
+                    gpu.setBackground(0); gpu.setForeground(0xffffff); gpu.set(resX - 9, resY - 3, "OVERHEAT")
+                    gpu.setForeground(of); gpu.setBackground(ob)
+                until lh < 15 and lfh < 15
+                of = gpu.getForeground(); ob = gpu.getBackground()
+                gpu.setBackground(0); gpu.setForeground(0xffffff); gpu.set(resX - 9, resY - 3, "OVERHEAT")
+                gpu.setForeground(of); gpu.setBackground(ob)
+                oht = false
+            end)
+        end
+    else
+        local of = gpu.getForeground(); local ob = gpu.getBackground()
+        gpu.setBackground(0); gpu.setForeground(0xffffff); gpu.set(resX - 9, resY - 3, "OVERHEAT")
+        gpu.setForeground(of); gpu.setBackground(ob)
+    end
+end
+
+gpu.setBackground(0xc3c3c3)
+gpu.fill(2, resY - 17, resX - 2, 18, ' ')
 threading.create(function()
     repeat
-        updateColHeat(); if not active then break end
-        os.sleep(.25)
-        updateFuelHeat(); if not active then break end
-        os.sleep(.25)
-        updateDepletion(); if not active then break end
-        os.sleep(.25)
-        updateXenon(); if not active then break end
-        os.sleep(.25)
+        for _, v in pairs(inpFunctions) do
+            if not active then break end
+            os.sleep(.15)
+            v()
+        end
     until not active
 end)
 
@@ -476,5 +562,3 @@ gpu.setBackground(0)
 gpu.setForeground(0xffffff)
 term.clear()
 gpu.setResolution(ox, oy)
-
--- TODO: turbine data
